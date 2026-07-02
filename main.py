@@ -24,6 +24,7 @@ app = FastAPI()
 # Pathオブジェクトに変換しておく
 BASE_DIR = Path(__file__).parent.resolve()
 
+# TODO ログに関する情報を出力が安定したら削除する
 # ログ出力用
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -69,32 +70,15 @@ def root():
 async def messages(request: Request):
     body = await request.json()
 
-    logger.info("body keys: %s", list(body.keys()))
-
     claudeMessages = body.get("messages", [])
 
-    logger.info("claudeMessages type: %s", type(claudeMessages).__name__)
-
-    if isinstance(claudeMessages, list):
-        logger.info("claudeMessages length: %s", len(claudeMessages))
-        logger.info(
-            "roles: %s",
-            [
-                msg.get("role") if isinstance(msg, dict) else type(msg).__name__
-                for msg in claudeMessages
-            ],
-        )
-    else:
-        logger.info("claudeMessages value: %r", claudeMessages)
-
     userText = getLatestUserText(claudeMessages)
-    logger.info("入力テキスト：%r", userText)
 
+    # 内部処理用かユーザーからの入力のものかを判定
     internalResponse = getInternalResponse(userText)
 
+    # 内部処理に関するものはOllamaに投げずそのままClaude Codeへ返す
     if internalResponse is not None:
-        logger.info("内部リクエストとして処理します：%r", internalResponse)
-
         return JSONResponse(
             {
                 "id": f"msg_{int(time.time())}",
@@ -116,6 +100,7 @@ async def messages(request: Request):
             }
         )
 
+    # Markdownを呼んで回答を返す
     sampleMd = readSampleMd()
 
     prompt = f"""
@@ -144,7 +129,7 @@ async def messages(request: Request):
             "id": f"msg_{int(time.time())}",
             "type": "message",
             "role": "assistant",
-            "model": "qwen2.5-coder:0.5b",
+            "model": "qwen2.5-coder:3b",
             "content": [
                 {
                     "type": "text",
@@ -168,10 +153,13 @@ def readSampleMd() -> str:
     
     return SAMPLE_MD_PATH.read_text(encoding = "utf-8")
 
+# Claudeからの値を文章に整形する
 def extractTextFromContent(content) -> str:
+    # 文字列なら空文字を削除して返す
     if isinstance(content, str):
         return content.strip()
 
+    # Listなら配列にtextを取得して返す
     if isinstance(content, list):
         texts = []
 
@@ -193,14 +181,15 @@ def extractTextFromContent(content) -> str:
 
     return ""
 
-
+# 会話のロールがuserのものだけを抽出して返す
+# 文章の抽出処理はextractTextFromContent()に投げる
 def getLatestUserText(messages: list) -> str:
     for msg in reversed(messages):
         if msg.get("role") != "user":
-            logger.info("最後のuserメッセージ：%s", json.dumps(msg, ensure_ascii=False, indent=2))
-            break
+            continue
 
         content = msg.get("content", "")
+        logger.info(content)
         text = extractTextFromContent(content)
 
         if text:
@@ -208,13 +197,18 @@ def getLatestUserText(messages: list) -> str:
 
     return ""
 
+# Claude CodeからBridgeに送られる内部リクエストをOllamaに投げるか仕分ける
+# Ollamaに投げる情報が肥大化しすぎないように
 def getInternalResponse(userText: str) -> str | None:
+    # userTextがからの場合は内部処理として空文字を返す
     if not userText:
         return ""
 
+    # SUGGESTION MODEは次にユーザーが入力しそうな候補をあげるものなので不要
     if "[SUGGESTION MODE:" in userText:
         return ""
 
+    # 会話タイトルは固定で[Claude Bridge検証]
     if "Write the title in the predominant language" in userText:
         return "Claude Bridge検証"
 
